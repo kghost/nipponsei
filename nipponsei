@@ -1,0 +1,67 @@
+#! /usr/bin/env ruby
+
+require 'set'
+require 'zip'
+require 'json'
+require 'mini_magick'
+
+repair = false
+
+archive = ENV["archive"]
+destination = ENV["destination"]
+
+File.open(File.expand_path("list.txt", destination), 'a+') { |listfile|
+  list = Set.new listfile.each_line.map(&:strip)
+
+  Dir.foreach(archive) { |filename|
+    full = File.join(archive, filename)
+    base = File.basename(filename, ".zip").strip
+    dest = File.join(destination, base)
+    exist = File.directory?(dest)
+    if (repair or not exist) and File.file?(File.join(full)) and File.extname(filename) == ".zip"
+      FileUtils.mkdir_p(File.join(dest, "tn"))
+      desc = {
+        name: base,
+        location: base,
+        songs: [],
+        jackets: []
+      }
+      Zip::File.open(full) do |zip_file|
+        zip_file.each do |entry|
+          puts "Extracting #{entry.name}"
+          f = File.join(dest, entry.name)
+          if (not File.file?(f))
+            entry.extract(f)
+          end
+
+          ext = File.extname(entry.name)
+          case ext
+          when ".mp3"
+            desc[:songs].push(entry.name)
+          when ".jpg"
+            image = MiniMagick::Image.open(f)
+            image.geometry "x120"
+            image.write File.join(dest, "tn", entry.name)
+
+            desc[:jackets].push(entry.name)
+            if entry.name == "CD.jpg"
+              image = MiniMagick::Image.open(f)
+              image.geometry "240x240"
+              image.write File.join(dest, ".cover.jpg")
+              desc[:cover] = ".cover.jpg"
+            end
+          when ".txt"
+
+          end
+        end
+      end
+      File.open(File.join(destination, base + ".json"), 'w') { |file|
+        file.write(JSON.generate(desc))
+      }
+
+      if (not list.include?(base))
+        listfile.puts base
+      end
+    end
+  }
+}
