@@ -15,17 +15,49 @@ $ ->
       backgroundColor: originalBg
     , animateMs
 
+  save_playlist = if Storage
+    (playlist) -> localStorage.playlist = JSON.stringify(_.map(playlist, (entry) ->
+      song:
+        name: entry.song.name
+        album:
+          name: entry.song.album.name))
+  else
+    () ->
+
+  load_playlist = () ->
+    return [] if not Storage or not localStorage?.playlist?
+    try
+      return JSON.parse(localStorage.playlist)
+    catch
+      return []
+
+  get_album = (album, callback) ->
+    if album.state == "none"
+      album.state = "fetching"
+      album.callbacks = [callback]
+      $.ajax(encodeURI(album_base + album.name + ".json")).done (data) =>
+        album.data = data
+        album.data.songs = _.map(album.data.songs, (song) -> album: album, name: song)
+        album.state = "done"
+        _.each(album.callbacks, (cb) -> cb())
+        album.callbacks = undefined
+    else if album.state == "fetching"
+      album.callbacks.push(callback)
+    else if album.state == "done"
+      cb()
+
   albumsPerPage = 8
   pagerShow = 7
   state =
     albums: []
+    albums_data: {}
     page: 0
     playlist:
       order: "normal"
-      list: []
+      list: load_playlist()
     playing:
       is_playing: false
-      entry: null
+      song: null
     highlight:
       album: null
     playlist_update: =>
@@ -43,9 +75,11 @@ $ ->
       @forceUpdate()
 
     removeSong: (entry) ->
-      if state.playing.entry == entry
-        play_next(entry, true)
+      play_next(entry.song, true) if state.playing.song == entry.song
       state.playlist.list = _.without(state.playlist.list, entry)
+      save_playlist(state.playlist.list)
+      state.pager_update()
+      state.album_update()
       @forceUpdate()
       false
 
@@ -66,11 +100,32 @@ $ ->
         tbody null,
           if state.playlist.list.length > 0
             _.map(state.playlist.list, (entry, index) =>
-              tr key: entry.album.name + '/' + entry.name, className: state.playing.is_playing && state.playing.entry == entry && "info" || "", onClick: play.bind(null, entry),
+              i = if not entry.resolved
+                if not entry.fetch
+                  entry.fetch = true
+                  if not (entry.song.album.name of state.albums_data)
+                    state.albums_data[entry.song.album.name] = {state: "none", name: entry.song.album.name}
+                  album = state.albums_data[entry.song.album.name]
+                  get_album(album, () =>
+                    song = _.find(album.data.songs, (song) -> song.name == entry.song.name)
+                    if song
+                      entry.resolved = true
+                      entry.song = song
+                    else
+                      entry.missing = true
+                    @forceUpdate())
+
+                key: entry.song.album.name + '/' + entry.song.name
+                className: entry.missing && "danger" || "warning"
+              else
+                key: entry.song.album.name + '/' + entry.song.name
+                className: state.playing.is_playing && state.playing.song == entry.song && "info" || ""
+                onClick: play.bind(null, entry.song)
+              tr i,
                 td null,
-                  div null, entry.album.name
+                  div null, entry.song.album.name
                   ul style: {marginBottom: 0},
-                    li null, entry.name
+                    li null, entry.song.name
                 td style: {verticalAlign: "middle"},
                   button type: "button", className: "btn btn-sm", onClick: @removeSong.bind(null, entry),
                     span className: "glyphicon glyphicon-minus")
@@ -116,8 +171,9 @@ $ ->
       high = Math.min(total_page, currentpage + (pagerShow - Math.min(Math.floor(pagerShow/2), currentpage)))
       div null,
         div className: "list-group",
-          _.map(state.albums.slice(state.page*albumsPerPage, state.page*albumsPerPage + albumsPerPage), (album) =>
-            a key: album.name, className: "list-group-item" + (state.highlight.album == album && " list-group-item-success" || (state.playing.is_playing && state.playing.entry.album == album && " list-group-item-info" || (_.any(state.playlist.list, (entry) -> entry.album == album) && " list-group-item-warning" || ""))), onClick: @scroll.bind(null, album),
+          _.map(state.albums.slice(state.page*albumsPerPage, state.page*albumsPerPage + albumsPerPage), (album_name) =>
+            album = state.albums_data[album_name]
+            a key: album.name, className: "list-group-item" + (state.highlight.album == album && " list-group-item-success" || (state.playing.is_playing && state.playing.song.album == album && " list-group-item-info" || (_.any(state.playlist.list, (entry) -> entry.song.album == album) && " list-group-item-warning" || ""))), onClick: @scroll.bind(null, album),
               album.name)
           div className: "list-group-item text-center",
             ul className: "pagination pagination-sm", style: {marginBottom: 0, marginTop: 0},
@@ -145,14 +201,10 @@ $ ->
       range = state.albums.slice(state.page*albumsPerPage, state.page*albumsPerPage + albumsPerPage)
       div null,
         if range.length > 0
-          _.reduce(_.map(range, (album) =>
+          _.reduce(_.map(range, (album_name) =>
+            album = state.albums_data[album_name]
             if album.state == "none"
-              album.state = "fetching"
-              $.ajax(encodeURI(album_base + album.name + ".json")).done (data) =>
-                album.data = data
-                album.data.songs = _.map(album.data.songs, (song) -> album: album, name: song)
-                album.state = "done"
-                @forceUpdate()
+              get_album(album, @forceUpdate.bind(@))
 
             album.domId = _.uniqueId()
             if album.state == "fetching"
@@ -163,7 +215,7 @@ $ ->
                 div className: "col-xs-12 col-sm-12 col-md-9",
                   h4 null,
                     "Loading " + album.name
-            else if album.state = "done"
+            else if album.state == "done"
               div key: album.name, id: album.domId, className: "container-fluid",
                 div className: "col-xs-12 col-sm-12 col-md-3",
                   a className: "thumbnail",
@@ -173,13 +225,15 @@ $ ->
                     album.data.name
                   table className: "table table-hover",
                     tbody null,
-                      _.map(album.data.songs, (song) ->
-                        tr key: song.name, className: state.playing.is_playing && state.playing.entry == song && "info" || (_.any(state.playlist.list, (entry) -> entry == song) && "warning" || ""),
+                      _.map(album.data.songs, (song) =>
+                        tr key: song.name, className: state.playing.is_playing && state.playing.song == song && "info" || (_.any(state.playlist.list, (entry) -> entry.song == song) && "warning" || ""),
                           td style: {width: "100%", verticalAlign: "middle"}, onClick: queue_play.bind(null, song),
                             a null,
                               song.name
                           td null,
-                            span className: "glyphicon glyphicon-plus", onClick: queue.bind(null, song)),
+                            span className: "glyphicon glyphicon-plus", onClick: =>
+                              queue(song)
+                              @forceUpdate()),
                   if album.data.jackets.length > 0
                     jackets = _.map(album.data.jackets, (jacket) -> album_base + album.data.location + '/' + jacket)
                     div null,
@@ -196,20 +250,23 @@ $ ->
 
   React.render(Album(), $("#albums")[0])
 
-  queue = (entry) ->
-    if not _.contains(state.playlist.list, entry)
-      state.playlist.list.push(entry)
+  queue = (song) ->
+    if not _.find(state.playlist.list, (entry) -> entry.song == song)
+      state.playlist.list.push(resolved: true, song: song)
+      save_playlist(state.playlist.list)
       state.playlist_update()
+      state.pager_update()
 
-  queue_play = (entry) ->
-    queue(entry)
-    play(entry)
+  queue_play = (song) ->
+    queue(song)
+    play(song)
 
   play_next = (last, remove) ->
+    list = _.filter(state.playlist.list, (entry) -> entry.resolved)
     if state.playlist.order == "random"
-      if state.playlist.list.length > 1
+      if list.length > 1
         loop
-          next = _.sample(state.playlist.list)
+          next = _.sample(list).song
           break if last != next
       else
         if remove
@@ -217,29 +274,29 @@ $ ->
         else
           next = last
     else
-      if remove && state.playlist.list.length == 1
+      if remove && list.length == 1
         next = null
       else
-        n = _.indexOf(state.playlist.list, last)
+        n = _.findIndex(list, (entry) -> entry.song == last)
         if n < 0
           next = null
         else
-          if n + 1 == state.playlist.list.length
+          if n + 1 == list.length
             if state.playlist.order == "normal"
               next = null
             else
-              next = state.playlist.list[0]
+              next = list[0].song
           else
-            next = state.playlist.list[n + 1]
+            next = list[n + 1].song
     if next
       play(next)
     else
       player.jPlayer("clearMedia")
 
-  play = (entry) ->
-    state.playing.entry = entry
+  play = (song) ->
+    state.playing.song = song
     player.jPlayer("setMedia",
-      mp3: album_base + entry.album.data.location + '/' + entry.name
+      mp3: album_base + song.album.data.location + '/' + song.name
     ).jPlayer("play")
 
   player = $("#jquery_jplayer_1")
@@ -250,9 +307,9 @@ $ ->
     size:
       width: "100%"
     volume: do -> if (v = localStorage?.getItem("volume"))
-        JSON.parse(v)
-      else
-        0.5
+      JSON.parse(v)
+    else
+      0.5
     play: ->
       state.playing.is_playing = true
       state.playlist_update()
@@ -265,8 +322,8 @@ $ ->
       state.album_update()
     ended: ->
       state.playing.is_playing = false
-      last = state.playing.entry
-      state.playing.entry = null
+      last = state.playing.song
+      state.playing.song = null
       state.playlist_update()
       state.pager_update()
       state.album_update()
@@ -278,16 +335,19 @@ $ ->
   $.ajax(album_base + "list.txt").done (list) ->
     lines = list.replace(/\r\n/g, "\n").split("\n")
     lines.length = lines.length - 1 # last is empty
-    state.albums = _.map(lines.reverse(), (album) -> state: "none", name: album)
+    state.albums = lines.reverse()
+    _.each(state.albums, (album_name) ->
+      if not (album_name of state.albums_data)
+        state.albums_data[album_name] = {state: "none", name: album_name})
     state.pager_update()
     state.album_update()
 
     $('#search').typeahead(hint: true, highlight: true, minLength: 1,
       name: 'search'
-      displayKey: "name"
+      display: (s) -> s
       source: (query, cb) ->
         q = new RegExp(query, "i")
-        cb(_.chain(state.albums).filter((album) -> album.name.search(q) >= 0).head(10).value()))
+        cb(_.chain(state.albums).filter((album_name) -> album_name.search(q) >= 0).head(10).value()))
 
     $('#search').bind('typeahead:selected', (obj, datum, da) ->
       state.highlight.album = datum
