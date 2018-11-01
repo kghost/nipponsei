@@ -44,7 +44,7 @@ $ ->
     else if album.state == "fetching"
       album.callbacks.push(callback)
     else if album.state == "done"
-      cb()
+      callback()
 
   albumsPerPage = 8
   pagerShow = 7
@@ -52,6 +52,7 @@ $ ->
     albums: []
     albums_data: {}
     page: 0
+    played: []
     playlist:
       order: "normal"
       list: load_playlist()
@@ -60,9 +61,30 @@ $ ->
       song: null
     highlight:
       album: null
-    playlist_update: =>
-    pager_update: =>
-    album_update: =>
+    playlist_update: ->
+    pager_update: ->
+    album_update: ->
+    title_update: ->
+      if state.playing.song != null
+        song = state.playing.song
+        navigator.mediaSession?.metadata = new MediaMetadata
+          title: song.name
+          album: song.album.name
+          artwork: [{
+            src: song.album.data.cover && album_base + song.album.data.location + '/' + song.album.data.cover || "cover.png"
+          }]
+        if state.playing.is_playing
+          document.title = "Nipponsei ▶ #{song.name} of #{song.album.name}"
+        else
+          document.title = "Nipponsei ❚❚ #{song.name} of #{song.album.name}"
+      else
+        navigator.mediaSession?.metadata = null
+        document.title = "Nipponsei"
+
+  navigator.mediaSession?.setActionHandler('seekbackward', -> player.jPlayer("play", player.data('jPlayer').status.currentTime - 10))
+  navigator.mediaSession?.setActionHandler('seekforward', -> player.jPlayer("play", player.data('jPlayer').status.currentTime + 10))
+  navigator.mediaSession?.setActionHandler('previoustrack', -> queue_play(state.played.pop()))
+  navigator.mediaSession?.setActionHandler('nexttrack', -> play_next(state.playing.song, false))
 
   {table, thead, tbody, th, button, span, tr, td, div, ul, li, td, hr, a, h4, img} = React.DOM
 
@@ -291,9 +313,15 @@ $ ->
     if next
       play(next)
     else
-      player.jPlayer("clearMedia")
+      stop()
+
+  stop = () ->
+    state.played.push(state.playing.song)
+    state.playing.song = null
+    player.jPlayer("clearMedia")
 
   play = (song) ->
+    state.played.push(state.playing.song)
     state.playing.song = song
     player.jPlayer("setMedia",
       mp3: album_base + song.album.data.location + '/' + song.name
@@ -312,22 +340,23 @@ $ ->
       0.5
     play: ->
       state.playing.is_playing = true
+      state.title_update()
       state.playlist_update()
       state.pager_update()
       state.album_update()
     pause: ->
       state.playing.is_playing = false
+      state.title_update()
       state.playlist_update()
       state.pager_update()
       state.album_update()
     ended: ->
       state.playing.is_playing = false
-      last = state.playing.song
-      state.playing.song = null
+      play_next(state.playing.song, false)
+      state.title_update()
       state.playlist_update()
       state.pager_update()
       state.album_update()
-      play_next(last, false)
     repeat: ->
     volumechange: (e) -> localStorage?.setItem("volume", JSON.stringify(e.jPlayer.options.volume))
   )
